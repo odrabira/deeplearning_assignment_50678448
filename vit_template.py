@@ -183,14 +183,20 @@ class PatchEmbedding(nn.Module):
         self.img_size = img_size
         self.patch_size = patch_size
         self.num_patches = (img_size // patch_size) ** 2
-
+        self.proj = nn.Conv2d(
+            in_channels=in_chans,
+            out_channels=embed_dim,
+            kernel_size=patch_size,
+            stride=patch_size,
+            padding=0,
+        )
         # TODO 1.1 ── Define self.proj as an nn.Conv2d that:
         #   • accepts in_chans input channels
         #   • outputs embed_dim channels
         #   • uses kernel_size = patch_size
         #   • uses stride     = patch_size
         #   • has no padding (padding=0)
-        raise NotImplementedError("TODO 1.1: implement PatchEmbedding.__init__")
+    
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # TODO 1.1 ── Apply self.proj to x, then reshape the output from
@@ -199,7 +205,10 @@ class PatchEmbedding(nn.Module):
         #
         #   Hint: after the conv you have shape (B, D, G, G).
         #   Call .flatten(2) to get (B, D, N), then .transpose(1, 2) for (B, N, D).
-        raise NotImplementedError("TODO 1.1: implement PatchEmbedding.forward")
+        x = self.proj(x)               
+        x = x.flatten(2)               
+        x = x.transpose(1, 2)        
+        return x
 
 
 # ---------------------------------------------------------------------------
@@ -266,11 +275,15 @@ class MultiHeadSelfAttention(nn.Module):
         self.num_heads = num_heads
         self.head_dim  = embed_dim // num_heads
         self.scale     = self.head_dim ** -0.5
-
+      
         # TODO 1.2 ── Create the four linear layers and the dropout layer
         #   described in the docstring above.
-        raise NotImplementedError("TODO 1.2: implement MultiHeadSelfAttention.__init__")
-
+        self.q_proj = nn.Linear(embed_dim, embed_dim, bias=True)
+        self.k_proj = nn.Linear(embed_dim, embed_dim, bias=True)
+        self.v_proj = nn.Linear(embed_dim, embed_dim, bias=True)
+        self.out_proj = nn.Linear(embed_dim, embed_dim, bias=True)
+        self.attn_drop = nn.Dropout(dropout)
+        
     def forward(
         self, x: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -282,9 +295,20 @@ class MultiHeadSelfAttention(nn.Module):
         #     torch.matmul  or  the @ operator
         #     F.softmax(scores, dim=-1)
         #     tensor.transpose(1, 2).contiguous().reshape(B, T, self.embed_dim)
-        raise NotImplementedError("TODO 1.2: implement MultiHeadSelfAttention.forward")
-
-
+        B, T, D = x.shape
+        q = self.q_proj(x)   
+        k = self.k_proj(x)   
+        v = self.v_proj(x)
+        q = q.reshape(B, T, self.num_heads, self.head_dim).transpose(1, 2)   
+        k = k.reshape(B, T, self.num_heads, self.head_dim).transpose(1, 2)  
+        v = v.reshape(B, T, self.num_heads, self.head_dim).transpose(1, 2)
+        scores = torch.matmul(q, k.transpose(-2, -1)) * self.scale 
+        attn_weights = F.softmax(scores, dim=-1)                    
+        attn_weights = self.attn_drop(attn_weights)
+        context = torch.matmul(attn_weights, v)
+        context = context.transpose(1, 2).contiguous().reshape(B, T, D)
+        out = self.out_proj(context)  
+        return out, attn_weights
 # ---------------------------------------------------------------------------
 
 class TransformerBlock(nn.Module):
