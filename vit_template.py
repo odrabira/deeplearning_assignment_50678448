@@ -363,7 +363,17 @@ class TransformerBlock(nn.Module):
         #     nn.Dropout(dropout)
         #     nn.Linear(mlp_dim, embed_dim)
         #     nn.Dropout(dropout)
-        raise NotImplementedError("TODO 1.3: implement TransformerBlock.__init__")
+        self.norm1 = nn.LayerNorm(embed_dim)
+        self.attn = MultiHeadSelfAttention(embed_dim, num_heads, dropout)
+        self.norm2 = nn.LayerNorm(embed_dim)
+
+        self.mlp = nn.Sequential(
+            nn.Linear(embed_dim, mlp_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(mlp_dim, embed_dim),
+            nn.Dropout(dropout),
+        )
 
     def forward(
         self, x: torch.Tensor
@@ -379,7 +389,10 @@ class TransformerBlock(nn.Module):
         #     x           = x + self.mlp(self.norm2(x))
         #
         #   Return (x, attn_weights).
-        raise NotImplementedError("TODO 1.3: implement TransformerBlock.forward")
+        attn_out, attn_weights = self.attn(self.norm1(x))
+        x = x + attn_out
+        x = x + self.mlp(self.norm2(x))
+        return x, attn_weights
 
 
 # ---------------------------------------------------------------------------
@@ -476,15 +489,54 @@ class VisionTransformer(nn.Module):
         #   nn.Parameter so they are learnable).
         #
         #   blocks is an nn.ModuleList; create num_layers TransformerBlock instances.
-        raise NotImplementedError("TODO 1.4: implement VisionTransformer.__init__")
+        self.patch_embed = PatchEmbedding(
+            img_size=img_size,
+            patch_size=patch_size,
+            in_chans=in_chans,
+            embed_dim=embed_dim,
+        )
+
+        num_patches = self.patch_embed.num_patches
+
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
+        self.pos_embed = nn.Parameter(torch.zeros(1, num_patches + 1, embed_dim))
+
+        self.blocks = nn.ModuleList([
+            TransformerBlock(
+                embed_dim=embed_dim,
+                num_heads=num_heads,
+                mlp_dim=mlp_dim,
+                dropout=dropout,
+            )
+            for _ in range(num_layers)
+        ])
+
+        self.norm = nn.LayerNorm(embed_dim)
+        self.head = nn.Linear(embed_dim, num_classes)
 
     def forward(
         self, x: torch.Tensor
     ) -> Tuple[torch.Tensor, List[torch.Tensor]]:
-        # TODO 1.4 ── Follow the 9-step guide in the docstring.
-        raise NotImplementedError("TODO 1.4: implement VisionTransformer.forward")
+        x = self.patch_embed(x)
 
+        B = x.shape[0]
 
+        cls_tokens = self.cls_token.expand(B, -1, -1)
+        x = torch.cat([cls_tokens, x], dim=1)
+
+        x = x + self.pos_embed
+
+        attn_list = []
+        for block in self.blocks:
+            x, attn = block(x)
+            attn_list.append(attn)
+
+        x = self.norm(x)
+        cls_out = x[:, 0]
+        logits = self.head(cls_out)
+
+        return logits, attn_list
+            
 # =============================================================================
 # Helper: build a VisionTransformer from a config dict
 # =============================================================================
