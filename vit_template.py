@@ -623,7 +623,40 @@ def get_cifar10_subset(
     #   4. For each class 0-9, collect its indices in the training set,
     #      then randomly sample 500 of them.
     #   5. Return (Subset(train_dataset, selected_indices), test_dataset).
-    raise NotImplementedError("TODO 1.5: implement get_cifar10_subset")
+    transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize(
+            mean=(0.4914, 0.4822, 0.4465),
+            std=(0.2470, 0.2435, 0.2616),
+        ),
+    ])
+
+    train_dataset = datasets.CIFAR10(
+        root=data_root,
+        train=True,
+        download=True,
+        transform=transform,
+    )
+
+    test_dataset = datasets.CIFAR10(
+        root=data_root,
+        train=False,
+        download=True,
+        transform=transform,
+    )
+    set_all_seeds(get_seed())
+    selected_indices = []
+    for class_idx in range(10):
+        class_indices = [
+            i for i, label in enumerate(train_dataset.targets)
+            if label == class_idx
+        ]
+        sampled = random.sample(class_indices, 500)
+        selected_indices.extend(sampled)
+
+    train_subset = Subset(train_dataset, selected_indices)
+
+    return train_subset, test_dataset
 
 
 def train_model(
@@ -704,8 +737,113 @@ def train_model(
     • Create checkpoint_dir if it doesn't exist: os.makedirs(..., exist_ok=True)
     """
     # TODO 1.6 ── Implement the training loop.
-    raise NotImplementedError("TODO 1.6: implement train_model")
+    train_loader = DataLoader(
+        train_subset,
+        batch_size=config["batch_size"],
+        shuffle=True,
+    )
 
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=256,
+        shuffle=False,
+    )
+
+    os.makedirs(checkpoint_dir, exist_ok=True)
+
+    criterion = nn.CrossEntropyLoss()
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=config["lr"],
+        weight_decay=1e-4,
+    )
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=config["epochs"],
+    )
+
+    history = []
+
+    total_params = sum(
+        p.numel() for p in model.parameters() if p.requires_grad
+    )
+
+    for epoch in range(1, config["epochs"] + 1):
+        start_time = time.time()
+        model.train()
+        running_loss = 0.0
+        num_batches = 0
+
+        for images, labels in train_loader:
+            optimizer.zero_grad()
+
+            logits, _ = model(images)
+            loss = criterion(logits, labels)
+
+            loss.backward()
+            optimizer.step()
+
+            running_loss += loss.item()
+            num_batches += 1
+
+        train_loss = running_loss / num_batches
+        model.eval()
+        correct = 0
+        total = 0
+
+        with torch.no_grad():
+            for images, labels in test_loader:
+                logits, _ = model(images)
+                preds = torch.argmax(logits, dim=1)
+
+                correct += (preds == labels).sum().item()
+                total += labels.size(0)
+
+        val_accuracy = correct / total
+        epoch_time_sec = time.time() - start_time
+
+        history.append({
+            "epoch": epoch,
+            "train_loss": round(train_loss, 4),
+            "val_accuracy": round(val_accuracy, 4),
+            "epoch_time_sec": round(epoch_time_sec, 4),
+        })
+
+        print(
+            f"Epoch {epoch}/{config['epochs']} | "
+            f"train_loss={train_loss:.4f} | "
+            f"val_accuracy={val_accuracy:.4f} | "
+            f"time={epoch_time_sec:.2f}s"
+        )
+        if epoch in checkpoint_epochs:
+            torch.save({
+                "model_state_dict": model.state_dict(),
+                "config": {
+                    "patch_size": config["patch_size"],
+                    "embed_dim": config["embed_dim"],
+                    "num_heads": config["num_heads"],
+                    "num_layers": config["num_layers"],
+                    "mlp_dim": config["mlp_dim"],
+                    "dropout": config["dropout"],
+                },
+                "epoch": epoch,
+                "student_id": STUDENT_ID,
+            }, os.path.join(checkpoint_dir, f"baseline_epoch_{epoch}.pt"))
+
+        scheduler.step()
+    log = {
+        "student_id": STUDENT_ID,
+        "seed": get_seed(),
+        "config": config,
+        "history": history,
+        "final_val_accuracy": round(history[-1]["val_accuracy"], 4),
+        "total_params": total_params,
+    }
+    if log_path is not None:
+        with open(log_path, "w") as f:
+            json.dump(log, f, indent=2)
+
+    return log
 
 # =============================================================================
 # PART 2 – Ablation Studies
