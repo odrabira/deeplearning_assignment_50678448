@@ -1031,7 +1031,44 @@ def compute_attention_entropy(
     • os.makedirs(os.path.dirname(output_path), exist_ok=True) before writing.
     """
     # TODO 3.1 -- Implement attention entropy computation.
-    raise NotImplementedError("TODO 3.1: implement compute_attention_entropy")
+    set_all_seeds(get_seed())
+
+    model = _load_baseline_checkpoint(checkpoint_path)
+    _, test_dataset = get_cifar10_subset()
+    test_loader = DataLoader(test_dataset, batch_size=256, shuffle=False)
+
+    num_layers = model.config["num_layers"]
+    num_heads = model.config["num_heads"]
+    entropy_sums = [0.0 for _ in range(num_layers)]
+    total_images = 0
+
+    eps = 1e-9  
+
+    with torch.no_grad():
+        for images, _ in test_loader:
+            logits, attn_list = model(images)
+
+            B = images.size(0)
+            total_images += B
+
+            for layer_idx, attn in enumerate(attn_list):
+
+                cls_attn = attn[:, :, 0, :] 
+                cls_attn = cls_attn.clamp(min=eps)
+
+                entropy = -(cls_attn * torch.log2(cls_attn)).sum(dim=-1)
+
+                entropy_sums[layer_idx] += entropy.sum().item()
+    result = {
+        f"layer_{i}": round(
+            entropy_sums[i] / (total_images * num_heads),
+            4
+        )
+        for i in range(num_layers)
+    }
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    _save_json(result, output_path)
+    return result
 
 
 def compute_pos_embed_correlation(
@@ -1081,7 +1118,46 @@ def compute_pos_embed_correlation(
     • num_pairs = N * (N - 1) // 2
     """
     # TODO 3.2 -- Implement positional embedding correlation.
-    raise NotImplementedError("TODO 3.2: implement compute_pos_embed_correlation")
+    set_all_seeds(get_seed())
+    model = _load_baseline_checkpoint(checkpoint_path)
+
+    with torch.no_grad():
+    
+        patch_pos_embed = model.pos_embed[0, 1:, :]   
+        N = patch_pos_embed.shape[0]
+
+    
+        normed = F.normalize(patch_pos_embed, dim=-1)
+        S = normed @ normed.T  
+
+        patch_size = model.config["patch_size"]
+        G = 32 // patch_size
+
+        coords = torch.tensor(
+            [[k // G, k % G] for k in range(N)],
+            dtype=torch.float32
+        )  
+
+      
+        diff = coords[:, None, :] - coords[None, :, :]   
+        E = diff.norm(dim=-1)                           
+
+        idx = torch.triu_indices(N, N, offset=1)
+        sim_vals = S[idx[0], idx[1]].detach().cpu().numpy()
+        dist_vals = E[idx[0], idx[1]].detach().cpu().numpy()
+        pearson_r = float(np.corrcoef(sim_vals, dist_vals)[0, 1])
+
+    num_pairs = N * (N - 1) // 2
+
+    result = {
+        "pearson_r": round(pearson_r, 4),
+        "num_pairs": num_pairs,
+    }
+
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    _save_json(result, output_path)
+
+    return result
 
 
 def compute_per_class_accuracy(
